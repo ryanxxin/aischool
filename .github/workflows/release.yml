@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"   # v1.0.0, v1.1.0 같은 태그 푸시 시 동작
+
+permissions:
+  contents: write   # 릴리스/파일 업로드 권한
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 자동 릴리스 노트 생성에 유리
+
+      - name: Set version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+
+      - name: Prepare dist artifacts (ZIP/TAR.GZ)
+        run: |
+          mkdir -p dist
+          # 저장소 전체를 패키징하되, 민감/불필요 파일 제외
+          zip -r "dist/moby-backend-${VERSION}.zip" . \
+            -x ".git/*" ".github/*" ".env" "**/__pycache__/*" "*.pyc" "*.pyo" "*.backup"
+          tar -czf "dist/moby-backend-${VERSION}.tar.gz" \
+            --exclude=".git" --exclude=".github" --exclude=".env" \
+            --exclude="**/__pycache__" --exclude="*.pyc" --exclude="*.pyo" --exclude="*.backup" \
+            .
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          echo "Generated checksums:"
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: MOBY Backend ${{ env.VERSION }}
+          body: |
+            ## MOBY Backend ${{ env.VERSION }}
+
+            이 릴리스는 태그 푸시에 의해 **GitHub Actions**로 자동 생성되었습니다.
+            - 작성자: ${{ github.actor }}
+            - 커밋: ${{ github.sha }}
+            - 저장소: ${{ github.repository }}
+
+            ### 포함 자산(Assets)
+            - moby-backend-${{ env.VERSION }}.zip / .tar.gz
+            - SHA256SUMS.txt (무결성 검증용)
+
+            > 상세 변경 사항은 자동 생성된 **Release notes**(커밋 비교)와 커밋 로그를 참고하세요.
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/moby-backend-${{ env.VERSION }}.zip
+            dist/moby-backend-${{ env.VERSION }}.tar.gz
+            dist/SHA256SUMS.txt
