@@ -126,13 +126,13 @@ python rpi_sensor.py
 - `main.py` - FastAPI 메인 서버 및 MQTT 구독, WebSocket 브로드캐스트 (엔트리 포인트)
 
 ### 패키지화된 코어 모듈
-핵심 모듈들은 `aischool` 패키지 아래 `core/`로 이동했습니다:
+핵심 모듈들은 `moby_backend` 패키지 아래 `core/`로 이동했습니다:
 
-- `aischool/core/alert_engine.py` - 알람 감지 엔진 (온도/진동 임계값 체크)
-- `aischool/core/llm_client.py` - AI 알람 분석 클라이언트 (LLM 연동)
-- `aischool/core/notifier.py` - Email 알림 발송 모듈
-- `aischool/core/rpi_sensor.py` - Raspberry Pi 센서 시뮬레이터 (테스트용)
-- `aischool/core/mock_sensor_alerts.py` - 개발용 모의 데이터 서버 (WebSocket + API)
+- `moby_backend/core/alert_engine.py` - 알람 감지 엔진 (온도/진동 임계값 체크)
+- `moby_backend/core/llm_client.py` - AI 알람 분석 클라이언트 (LLM 연동)
+- `moby_backend/core/notifier.py` - Email 알림 발송 모듈
+- `moby_backend/core/rpi_sensor.py` - Raspberry Pi 센서 시뮬레이터 (테스트용)
+- `moby_backend/core/mock_sensor_alerts.py` - 개발용 모의 데이터 서버 (WebSocket + API)
 
 루트에는 엔트리 포인트(`main.py`), 설정(`.env`), 문서(`README.md`)만 남기고 구현은 패키지 내부에서 관리합니다. 루트에 있던 원본 파일들은 `backup_root/`에 보관되어 있으니 필요 시 복원하세요.
 
