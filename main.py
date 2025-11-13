@@ -15,9 +15,9 @@ from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 # 알람 시스템 import
-from alert_engine import AlertEngine
-from llm_client import LLMClient
-from notifier import EmailNotifier
+from aischool.core.alert_engine import AlertEngine
+from aischool.core.llm_client import LLMClient
+from aischool.core.notifier import EmailNotifier
 
 load_dotenv()
 

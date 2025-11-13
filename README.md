@@ -123,9 +123,32 @@ python rpi_sensor.py
 - `WebSocket /ws/sensor` - 실시간 센서 데이터 스트리밍
 
 ## 프로젝트 구조
-- `main.py` - FastAPI 메인 서버 및 MQTT 구독, WebSocket 브로드캐스트
-- `alert_engine.py` - 알람 감지 엔진 (온도/진동 임계값 체크)
-- `llm_client.py` - AI 알람 분석 클라이언트 (OpenAI API)
-- `notifier.py` - Email 알림 발송 모듈
-- `rpi_sensor.py` - Raspberry Pi 센서 시뮬레이터 (테스트용)
-- `mock_sensor_alerts.py` - 개발용 모의 데이터 서버
+- `main.py` - FastAPI 메인 서버 및 MQTT 구독, WebSocket 브로드캐스트 (엔트리 포인트)
+
+### 패키지화된 코어 모듈
+핵심 모듈들은 `aischool` 패키지 아래 `core/`로 이동했습니다:
+
+- `aischool/core/alert_engine.py` - 알람 감지 엔진 (온도/진동 임계값 체크)
+- `aischool/core/llm_client.py` - AI 알람 분석 클라이언트 (LLM 연동)
+- `aischool/core/notifier.py` - Email 알림 발송 모듈
+- `aischool/core/rpi_sensor.py` - Raspberry Pi 센서 시뮬레이터 (테스트용)
+- `aischool/core/mock_sensor_alerts.py` - 개발용 모의 데이터 서버 (WebSocket + API)
+
+루트에는 엔트리 포인트(`main.py`), 설정(`.env`), 문서(`README.md`)만 남기고 구현은 패키지 내부에서 관리합니다. 루트에 있던 원본 파일들은 `backup_root/`에 보관되어 있으니 필요 시 복원하세요.
+
+### 사용 방법 (요약)
+1. 가상환경 활성화
+```powershell
+.\venv\Scripts\activate
+```
+2. 의존성 설치
+```powershell
+pip install -r requirements.txt
+```
+3. 환경 변수 설정 (`.env`)
+4. 개발 서버 실행
+```powershell
+python main.py
+# 또는
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
