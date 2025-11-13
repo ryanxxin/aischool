@@ -11,7 +11,7 @@ Raspberry Pi 센서 데이터를 수집, 저장, 분석하고 실시간 알람�
   - BMP180 (압력/온도 센서)
 - InfluxDB를 통한 시계열 데이터 저장
 - 실시간 WebSocket 데이터 스트리밍
-- AI 기반 알람 분석 및 자동 알림 (Slack, Email)
+- AI 기반 알람 분석 및 자동 알림 (Email)
 - 온도/진동 임계값 기반 자동 알람 감지
   - 온도: BMP180 센서 기준
   - 진동: 전압 기준 지속 감지
@@ -52,9 +52,6 @@ VIBRATION_DURATION_MINUTES=5  # 진동 지속 시간 (분)
 LLM_API_URL=https://api.openai.com/v1/chat/completions
 LLM_API_KEY=your-api-key
 LLM_MODEL=gpt-4o-mini
-
-# Slack 알림 (선택사항)
-SLACK_WEBHOOK_URL=your-webhook-url
 
 # Email 알림 (선택사항, Critical 알람만)
 EMAIL_SENDER=your-email@gmail.com
@@ -118,7 +115,7 @@ python rpi_sensor.py
 ## 알람 시스템
 - **온도 알람**: BMP180(pressure) 센서의 온도가 임계값을 초과하면 Critical 알람 발생
 - **진동 알람**: 진동 센서의 전압이 임계값을 초과한 상태가 일정 시간 지속되면 Warning 알람 발생
-- 알람 발생 시 Slack/Email로 자동 알림 발송
+- 알람 발생 시 Email로 자동 알림 발송 (Critical 알람만)
 - AI(LLM)를 통한 알람 상황 분석 및 권장 조치 제시
 
 ## API 엔드포인트
@@ -129,6 +126,6 @@ python rpi_sensor.py
 - `main.py` - FastAPI 메인 서버 및 MQTT 구독, WebSocket 브로드캐스트
 - `alert_engine.py` - 알람 감지 엔진 (온도/진동 임계값 체크)
 - `llm_client.py` - AI 알람 분석 클라이언트 (OpenAI API)
-- `notifier.py` - Slack/Email 알림 발송 모듈
+- `notifier.py` - Email 알림 발송 모듈
 - `rpi_sensor.py` - Raspberry Pi 센서 시뮬레이터 (테스트용)
 - `mock_sensor_alerts.py` - 개발용 모의 데이터 서버

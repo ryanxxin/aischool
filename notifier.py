@@ -1,54 +1,12 @@
 # backend/notifier.py
 import os
 import asyncio
-import aiohttp
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
-
-class SlackNotifier:
-    def __init__(self):
-        self.webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-        if not self.webhook_url:
-            logger.info("SLACK_WEBHOOK_URL not set. Slack notifications disabled.")
-    
-    async def send(self, alert: dict):
-        if not self.webhook_url:
-            logger.info(f"[Slack 비활성화] {alert['message']}")
-            return
-        color = "#DC2626" if alert["level"] == "CRITICAL" else "#F59E0B"
-        llm_summary = alert.get("llm_summary", "")
-        fields = [
-            {"title": "센서 ID", "value": alert["sensor_id"], "short": True},
-            {"title": "메트릭", "value": alert["metric"], "short": True},
-            {"title": "현재 값", "value": str(alert.get("value", "N/A")), "short": True},
-            {"title": "임계값", "value": str(alert.get("threshold", "N/A")), "short": True}
-        ]
-        if llm_summary:
-            fields.append({"title": "AI 분석", "value": llm_summary, "short": False})
-        payload = {
-            "attachments": [{
-                "color": color,
-                "title": f"{alert['level']} Alert",
-                "text": alert["message"],
-                "fields": fields,
-                "footer": "MOBY Alert System",
-                "ts": int(datetime.fromisoformat(alert["timestamp"]).timestamp())
-            }]
-        }
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self.webhook_url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    if resp.status != 200:
-                        logger.error(f"Slack notification failed: {resp.status}")
-                    else:
-                        logger.info(f"Slack notification sent for {alert['id']}")
-        except Exception as e:
-            logger.error(f"Slack send error: {e}")
 
 class EmailNotifier:
     def __init__(self):
