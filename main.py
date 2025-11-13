@@ -18,7 +18,6 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from moby_backend.core.alert_engine import AlertEngine
 from moby_backend.core.llm_client import LLMClient
 from moby_backend.core.notifier import EmailNotifier
-from moby_backend.core.report_store import ReportStore
 
 load_dotenv()
 
@@ -38,7 +37,6 @@ write_api = None
 alert_engine: AlertEngine | None = None
 llm_client: LLMClient | None = None
 email_notifier: EmailNotifier | None = None
-report_store: ReportStore | None = None
 
 logging.basicConfig(level=logging.INFO)
 
@@ -65,12 +63,6 @@ async def lifespan(app: FastAPI):
             alert_engine = AlertEngine(influx_client, INFLUX_BUCKET)
             llm_client = LLMClient()
             email_notifier = EmailNotifier()
-            # init report store (PostgreSQL)
-            report_store = ReportStore()
-            try:
-                await report_store.init()
-            except Exception as e:
-                logging.error("Failed to initialize ReportStore: %s", e)
             
             # 알람 워커 시작
             asyncio.create_task(alert_worker())
@@ -97,9 +89,6 @@ async def lifespan(app: FastAPI):
         if influx_client:
             influx_client.close()
             logging.info("InfluxDB client closed")
-        if report_store:
-            await report_store.close()
-            logging.info("ReportStore closed")
     except Exception as exc:  # pylint: disable=broad-except
         logging.error("Error during shutdown: %s", exc)
 
@@ -347,12 +336,6 @@ async def handle_alert(alert: dict):
             llm_summary = await llm_client.generate_alert_summary(alert)
             if llm_summary:
                 alert["llm_summary"] = llm_summary
-                # Save report to PostgreSQL if available
-                try:
-                    if report_store:
-                        await report_store.save_report(alert, llm_summary)
-                except Exception as e:
-                    logging.error(f"Failed to save report: {e}")
         
         # Email 전송 (Critical만)
         if email_notifier:
@@ -458,7 +441,7 @@ from(bucket: "{INFLUX_BUCKET}")
 
 
 async def generate_and_store_weekly_report():
-    """Create weekly summary, generate LLM report, and store it in ReportStore."""
+    """Create weekly summary and generate LLM report (no DB storage)."""
     try:
         summary = await generate_timeseries_summary(hours=24 * 7)
         report_text = ""
@@ -478,18 +461,7 @@ async def generate_and_store_weekly_report():
             "llm_summary": report_text,
         }
 
-        if report_store:
-            # ReportStore.save_report expects an 'alert' dict; adapt by passing key fields
-            await report_store.save_report({
-                "id": report_record["id"],
-                "sensor_id": report_record["sensor_id"],
-                "level": report_record["level"],
-                "metric": report_record["metric"],
-                "value": report_record["value"],
-                "threshold": report_record["threshold"],
-                "timestamp": report_record["timestamp"],
-                "raw_summary": report_record["raw_summary"],
-            }, report_text)
+        # PostgreSQL storage of reports has been removed per configuration.
 
         logging.info("Weekly report generated and stored")
     except Exception as e:
