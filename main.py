@@ -25,6 +25,10 @@ INFLUX_ORG = os.getenv("INFLUX_ORG")
 INFLUX_BUCKET = os.getenv("INFLUX_BUCKET")
 INFLUX_TOKEN = os.getenv("INFLUX_TOKEN")
 
+# MQTT 설정
+MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")  # 라즈베리파이 IP 주소
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+
 influx_client: InfluxDBClient | None = None
 write_api = None
 
@@ -83,7 +87,17 @@ event_loop: asyncio.AbstractEventLoop | None = None
 
 def on_connect(client, userdata, flags, rc):  # pylint: disable=unused-argument
     logging.info("MQTT Connected with result code %s", rc)
-    client.subscribe("sensors/vibration")
+    # 실제 센서 토픽 구독
+    topics = [
+        "factory/sensor/dht11",
+        "factory/sensor/vibration",
+        "factory/sensor/sound",
+        "factory/sensor/accel_gyro",
+        "factory/sensor/pressure",
+    ]
+    for topic in topics:
+        client.subscribe(topic)
+        logging.info(f"Subscribed to: {topic}")
 
 
 def on_message(client, userdata, msg):  # pylint: disable=unused-argument
@@ -92,27 +106,77 @@ def on_message(client, userdata, msg):  # pylint: disable=unused-argument
 
     try:
         payload = json.loads(msg.payload.decode())
-        latest_sensor_data = payload
-        logging.info("Received sensor data: %s", payload)
+        sensor_type = payload.get("sensor_type", "unknown")
+        fields = payload.get("fields", {})
+        timestamp_ns = payload.get("timestamp_ns")
+        
+        logging.info(f"Received {sensor_type} data from {msg.topic}")
+        
+        # 토픽에서 센서 타입 추출 (백업용)
+        if sensor_type == "unknown":
+            topic_parts = msg.topic.split("/")
+            if len(topic_parts) >= 3:
+                sensor_type = topic_parts[-1]
 
-        if write_api:
-            vibration = payload.get("vibration", {})
-            point = (
-                Point("sensor_reading")
-                .tag("device_id", payload.get("device_id", "unknown"))
-                .tag("sensor_type", payload.get("sensor_type", "unknown"))
-                .field("vibration_x", float(vibration.get("x", 0.0)))
-                .field("vibration_y", float(vibration.get("y", 0.0)))
-                .field("vibration_z", float(vibration.get("z", 0.0)))
-                .field("vibration_magnitude", float(vibration.get("magnitude", 0.0)))
-                .field("temperature", float(payload.get("temperature", 0.0)))
-                .field("rpm", float(payload.get("rpm", 0.0)))
-                .time(payload.get("timestamp"), WritePrecision.NS)
-            )
+        # InfluxDB 저장
+        if write_api and timestamp_ns:
+            point = Point("sensor_reading")
+            point.tag("sensor_type", sensor_type)
+            point.tag("sensor_model", payload.get("sensor_model", "unknown"))
+            
+            # 센서 타입별 필드 저장
+            if sensor_type == "dht11":
+                point.field("temperature_c", float(fields.get("temperature_c", 0.0)))
+                point.field("humidity_percent", float(fields.get("humidity_percent", 0.0)))
+                # 온도 데이터를 latest_sensor_data에도 저장 (알람용)
+                latest_sensor_data = {
+                    "sensor_type": sensor_type,
+                    "temperature": fields.get("temperature_c", 0.0),
+                    "timestamp": timestamp_ns
+                }
+                
+            elif sensor_type == "vibration":
+                point.field("vibration_raw", int(fields.get("vibration_raw", 0)))
+                point.field("vibration_voltage", float(fields.get("vibration_voltage", 0.0)))
+                # 진동 전압을 magnitude로 사용 (임계값 체크용)
+                latest_sensor_data = {
+                    "sensor_type": sensor_type,
+                    "vibration_magnitude": fields.get("vibration_voltage", 0.0),
+                    "timestamp": timestamp_ns
+                }
+                
+            elif sensor_type == "sound":
+                point.field("sound_raw", int(fields.get("sound_raw", 0)))
+                point.field("sound_voltage", float(fields.get("sound_voltage", 0.0)))
+                
+            elif sensor_type == "accel_gyro":
+                point.field("accel_x", float(fields.get("accel_x", 0.0)))
+                point.field("accel_y", float(fields.get("accel_y", 0.0)))
+                point.field("accel_z", float(fields.get("accel_z", 0.0)))
+                point.field("gyro_x", float(fields.get("gyro_x", 0.0)))
+                point.field("gyro_y", float(fields.get("gyro_y", 0.0)))
+                point.field("gyro_z", float(fields.get("gyro_z", 0.0)))
+                
+            elif sensor_type == "pressure":
+                point.field("temperature_c", float(fields.get("temperature_c", 0.0)))
+                point.field("pressure_hpa", float(fields.get("pressure_hpa", 0.0)))
+                if "altitude_m" in fields:
+                    point.field("altitude_m", float(fields.get("altitude_m", 0.0)))
+                if "sea_level_pressure_hpa" in fields:
+                    point.field("sea_level_pressure_hpa", float(fields.get("sea_level_pressure_hpa", 0.0)))
+            
+            # timestamp_ns를 나노초로 변환
+            point.time(int(timestamp_ns), WritePrecision.NS)
             write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
 
+        # WebSocket 브로드캐스트 (원본 payload 전송)
         if event_loop and not event_loop.is_closed():
-            asyncio.run_coroutine_threadsafe(manager.broadcast(payload), event_loop)
+            broadcast_payload = {
+                "topic": msg.topic,
+                "sensor_type": sensor_type,
+                **payload
+            }
+            asyncio.run_coroutine_threadsafe(manager.broadcast(broadcast_payload), event_loop)
         else:
             logging.warning("Event loop not ready. Skipping broadcast.")
     except Exception as exc:  # pylint: disable=broad-except
@@ -151,9 +215,9 @@ async def startup_event() -> None:
         else:
             logging.warning("InfluxDB environment variables missing. Skipping InfluxDB init.")
 
-        mqtt_client.connect("localhost", 1883, 60)
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
         mqtt_client.loop_start()
-        logging.info("MQTT client started")
+        logging.info(f"MQTT client started (broker: {MQTT_BROKER}:{MQTT_PORT})")
     except Exception as exc:  # pylint: disable=broad-except
         logging.error("Failed to connect to MQTT broker: %s", exc)
 
@@ -162,10 +226,10 @@ async def startup_event() -> None:
 
 async def alert_worker():
     """5초마다 알람 조건 체크"""
-    # 실제 센서 ID로 변경하세요
-    sensor_ids = ["sensor_001", "sensor_002", "sensor_003"]
+    # 센서 타입별 모니터링 (device_id 대신 sensor_type 사용)
+    sensor_types = ["pressure", "vibration"]  # 온도는 BMP180(pressure), 진동은 vibration
     
-    logging.info(f"🔍 Alert worker started. Monitoring sensors: {sensor_ids}")
+    logging.info(f"🔍 Alert worker started. Monitoring sensor types: {sensor_types}")
     
     while True:
         try:
@@ -174,14 +238,15 @@ async def alert_worker():
                 await asyncio.sleep(5)
                 continue
                 
-            for sensor_id in sensor_ids:
-                # 온도 체크
-                temp_alert = await alert_engine.check_temperature_critical(sensor_id)
+            # 온도 체크 (BMP180 pressure 센서)
+            if "pressure" in sensor_types:
+                temp_alert = await alert_engine.check_temperature_critical("pressure")
                 if temp_alert:
                     await handle_alert(temp_alert)
-                
-                # 진동 체크
-                vib_alert = await alert_engine.check_vibration_sustained(sensor_id)
+            
+            # 진동 체크 (vibration 센서)
+            if "vibration" in sensor_types:
+                vib_alert = await alert_engine.check_vibration_sustained("vibration")
                 if vib_alert:
                     await handle_alert(vib_alert)
             
