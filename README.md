@@ -34,7 +34,7 @@ pip install -r requirements.txt
 `.env` 파일을 생성하고 다음 변수들을 설정하세요:
 ```env
 # InfluxDB 설정
-INFLUX_URL=http://localhost:8086
+INFLUX_URL=https://us-east-1-1.aws.cloud2.influxdata.com
 INFLUX_ORG=your-org
 INFLUX_BUCKET=your-bucket
 INFLUX_TOKEN=your-token
