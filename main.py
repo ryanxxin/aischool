@@ -18,6 +18,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from moby_backend.core.alert_engine import AlertEngine
 from moby_backend.core.llm_client import LLMClient
 from moby_backend.core.notifier import EmailNotifier
+from moby_backend.core.report_store import ReportStore
 
 load_dotenv()
 
@@ -37,6 +38,7 @@ write_api = None
 alert_engine: AlertEngine | None = None
 llm_client: LLMClient | None = None
 email_notifier: EmailNotifier | None = None
+report_store: ReportStore | None = None
 
 logging.basicConfig(level=logging.INFO)
 
@@ -63,9 +65,17 @@ async def lifespan(app: FastAPI):
             alert_engine = AlertEngine(influx_client, INFLUX_BUCKET)
             llm_client = LLMClient()
             email_notifier = EmailNotifier()
+            # init report store (PostgreSQL)
+            report_store = ReportStore()
+            try:
+                await report_store.init()
+            except Exception as e:
+                logging.error("Failed to initialize ReportStore: %s", e)
             
             # 알람 워커 시작
             asyncio.create_task(alert_worker())
+            # start weekly report scheduler
+            asyncio.create_task(weekly_report_scheduler())
             logging.info("✅ Alert system initialized")
         else:
             logging.warning("InfluxDB environment variables missing. Skipping InfluxDB init.")
@@ -87,6 +97,9 @@ async def lifespan(app: FastAPI):
         if influx_client:
             influx_client.close()
             logging.info("InfluxDB client closed")
+        if report_store:
+            await report_store.close()
+            logging.info("ReportStore closed")
     except Exception as exc:  # pylint: disable=broad-except
         logging.error("Error during shutdown: %s", exc)
 
@@ -334,6 +347,12 @@ async def handle_alert(alert: dict):
             llm_summary = await llm_client.generate_alert_summary(alert)
             if llm_summary:
                 alert["llm_summary"] = llm_summary
+                # Save report to PostgreSQL if available
+                try:
+                    if report_store:
+                        await report_store.save_report(alert, llm_summary)
+                except Exception as e:
+                    logging.error(f"Failed to save report: {e}")
         
         # Email 전송 (Critical만)
         if email_notifier:
@@ -377,3 +396,159 @@ async def websocket_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+async def generate_timeseries_summary(hours: int = 168, sensor_types: list | None = None) -> dict:
+    """Aggregate InfluxDB metrics for the given period (hours). Returns summary dict."""
+    if not influx_client:
+        return {"metrics": {}}
+
+    query_api = influx_client.query_api()
+    summary = {"start": f"-{hours}h", "end": "now", "metrics": {}}
+
+    sensor_fields = {
+        "dht11": ["temperature_c", "humidity_percent"],
+        "vibration": ["vibration_voltage"],
+        "sound": ["sound_voltage"],
+        "accel_gyro": ["accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"],
+        "pressure": ["temperature_c", "pressure_hpa", "altitude_m", "sea_level_pressure_hpa"],
+    }
+
+    requested = sensor_types or list(sensor_fields.keys())
+
+    def run_scalar_query(flux: str):
+        try:
+            res = query_api.query(flux)
+            for table in res:
+                for record in table.records:
+                    return record.get_value()
+        except Exception as e:
+            logging.error("Influx query error: %s", e)
+        return None
+
+    for sensor in requested:
+        fields = sensor_fields.get(sensor, [])
+        if not fields:
+            continue
+        summary["metrics"][sensor] = {}
+        for field in fields:
+            stats = {"mean": None, "min": None, "max": None}
+            flux_mean = f'''
+from(bucket: "{INFLUX_BUCKET}")
+  |> range(start: -{hours}h)
+  |> filter(fn: (r) => r["_measurement"] == "sensor_reading")
+  |> filter(fn: (r) => r["sensor_type"] == "{sensor}")
+  |> filter(fn: (r) => r["_field"] == "{field}")
+  |> mean()
+'''
+            m = run_scalar_query(flux_mean)
+            stats["mean"] = float(m) if m is not None else None
+
+            flux_min = flux_mean.replace("mean()", "min()")
+            mi = run_scalar_query(flux_min)
+            stats["min"] = float(mi) if mi is not None else None
+
+            flux_max = flux_mean.replace("mean()", "max()")
+            ma = run_scalar_query(flux_max)
+            stats["max"] = float(ma) if ma is not None else None
+
+            summary["metrics"][sensor][field] = stats
+
+    return summary
+
+
+async def generate_and_store_weekly_report():
+    """Create weekly summary, generate LLM report, and store it in ReportStore."""
+    try:
+        summary = await generate_timeseries_summary(hours=24 * 7)
+        report_text = ""
+        if llm_client:
+            report_text = await llm_client.generate_timeseries_report(summary)
+
+        # create a report record-like dict
+        report_record = {
+            "id": f"weekly_{int(__import__('time').time())}",
+            "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
+            "sensor_id": "aggregate",
+            "level": "INFO",
+            "metric": "weekly_summary",
+            "value": None,
+            "threshold": None,
+            "raw_summary": summary,
+            "llm_summary": report_text,
+        }
+
+        if report_store:
+            # ReportStore.save_report expects an 'alert' dict; adapt by passing key fields
+            await report_store.save_report({
+                "id": report_record["id"],
+                "sensor_id": report_record["sensor_id"],
+                "level": report_record["level"],
+                "metric": report_record["metric"],
+                "value": report_record["value"],
+                "threshold": report_record["threshold"],
+                "timestamp": report_record["timestamp"],
+                "raw_summary": report_record["raw_summary"],
+            }, report_text)
+
+        logging.info("Weekly report generated and stored")
+    except Exception as e:
+        logging.error(f"Failed to generate/store weekly report: {e}")
+
+
+def seconds_until_next(day_of_week: int = 0, hour: int = 0, minute: int = 0, tz_name: str = "UTC") -> int:
+    """Return seconds until next given weekday/time in the given timezone.
+
+    day_of_week: Monday=0..Sunday=6
+    tz_name: IANA timezone name (e.g. 'Asia/Seoul'). Falls back to UTC arithmetic if zoneinfo unavailable.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        # Prefer the stdlib ZoneInfo (Python 3.9+)
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name)
+        now = datetime.now(tz)
+
+        days_ahead = (day_of_week - now.weekday() + 7) % 7
+        target_date = (now.date() + timedelta(days=days_ahead))
+        target = datetime(year=target_date.year, month=target_date.month, day=target_date.day,
+                          hour=hour, minute=minute, second=0, microsecond=0, tzinfo=tz)
+        if target <= now:
+            target += timedelta(days=7)
+
+        # compute seconds until target relative to UTC now to avoid clock skew
+        now_utc = datetime.now(timezone.utc)
+        delta = target.astimezone(timezone.utc) - now_utc
+        return int(delta.total_seconds())
+    except Exception:
+        # fallback: approximate using UTC offset heuristic (Asia/Seoul -> +9)
+        from datetime import datetime as _dt
+
+        offset_hours = 9 if ("Seoul" in tz_name or "KST" in tz_name) else 0
+        now_local = _dt.utcnow() + timedelta(hours=offset_hours)
+        days_ahead = (day_of_week - now_local.weekday() + 7) % 7
+        target = _dt(year=now_local.year, month=now_local.month, day=now_local.day) + timedelta(days=days_ahead)
+        target = target.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now_local:
+            target += timedelta(days=7)
+        delta = target - now_local
+        return int(delta.total_seconds())
+
+
+async def weekly_report_scheduler():
+    """Schedule weekly report generation. Default: Monday 09:00 KST (Asia/Seoul)."""
+    try:
+        # compute initial delay (KST Monday 09:00)
+        delay = seconds_until_next(day_of_week=0, hour=9, minute=0, tz_name="Asia/Seoul")
+        logging.info(f"Weekly report scheduler sleeping for {delay} seconds until next run (KST Mon 09:00)")
+        await asyncio.sleep(delay)
+        while True:
+            await generate_and_store_weekly_report()
+            # sleep for 7 days
+            await asyncio.sleep(7 * 24 * 3600)
+    except asyncio.CancelledError:
+        logging.info("Weekly report scheduler cancelled")
+    except Exception as e:
+        logging.error(f"weekly_report_scheduler error: {e}")
