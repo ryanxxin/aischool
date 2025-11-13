@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from typing import List
-
+from datetime import datetime
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -219,7 +219,42 @@ async def handle_alert(alert: dict):
         logging.error(f"Alert handling error: {e}")
 
 
+# ================== API 엔드포인트 ====================
 # ==================== API 엔드포인트 ====================
+
+@app.post("/api/debug/test-alert")
+async def debug_test_alert():
+    """
+    프론트–백엔드 연동 확인용 디버그 알람 한 번 쏘는 엔드포인트
+    실제 AlertEngine 흐름과 비슷한 형식으로 alert dict를 만든다.
+    """
+    alert = {
+        "id": f"debug-{datetime.utcnow().isoformat()}",
+        "level": "warning",
+        "message": "디버그용 테스트 알람입니다.",
+        "llm_summary": None,
+        "sensor_id": "debug_sensor",
+        "source": "debug-api",
+        "ts": datetime.utcnow().isoformat(),
+    }
+
+    # 옵션: LLM 요약도 한번 붙여보고 싶으면
+    if llm_client:
+        try:
+            summary = await llm_client.generate_alert_summary(alert)
+            if summary:
+                alert["llm_summary"] = summary
+        except Exception as e:
+            logging.error("LLM summary error in debug_test_alert: %s", e)
+
+    # WebSocket으로 프론트에 브로드캐스트
+    await manager.broadcast({
+        "type": "alert",
+        "payload": alert,
+    })
+
+    logging.info("✅ Sent debug alert: %s", alert["id"])
+    return {"status": "ok", "alert": alert}
 
 @app.get("/api/alerts/history")
 async def get_alert_history(hours: int = 24):

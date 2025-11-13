@@ -10,6 +10,10 @@ __pycache__/
 *.bak
 *.txt
 
+
+# Allow this file even though *.txt is ignored
+!requirements.txt
+
 # Environment
 .env
 .env.local
