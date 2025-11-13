@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import List
 
 import paho.mqtt.client as mqtt
@@ -39,7 +40,58 @@ email_notifier: EmailNotifier | None = None
 
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="IoT Sensor API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI Lifespan event handler for startup and shutdown"""
+    global event_loop  # noqa: PLW0603
+    global influx_client  # noqa: PLW0603
+    global write_api  # noqa: PLW0603
+    global alert_engine, llm_client, email_notifier
+
+    # Startup
+    try:
+        event_loop = asyncio.get_running_loop()
+
+        if all([INFLUX_URL, INFLUX_ORG, INFLUX_BUCKET, INFLUX_TOKEN]):
+            influx_client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
+            write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+            logging.info("InfluxDB client started")
+            
+            # 알람 시스템 초기화
+            logging.info("🚀 Starting MOBY Alert System...")
+            alert_engine = AlertEngine(influx_client, INFLUX_BUCKET)
+            llm_client = LLMClient()
+            email_notifier = EmailNotifier()
+            
+            # 알람 워커 시작
+            asyncio.create_task(alert_worker())
+            logging.info("✅ Alert system initialized")
+        else:
+            logging.warning("InfluxDB environment variables missing. Skipping InfluxDB init.")
+
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+        logging.info(f"MQTT client started (broker: {MQTT_BROKER}:{MQTT_PORT})")
+    except Exception as exc:  # pylint: disable=broad-except
+        logging.error("Failed to connect to MQTT broker: %s", exc)
+
+    yield
+
+    # Shutdown
+    try:
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
+        logging.info("MQTT client stopped")
+        
+        if influx_client:
+            influx_client.close()
+            logging.info("InfluxDB client closed")
+    except Exception as exc:  # pylint: disable=broad-except
+        logging.error("Error during shutdown: %s", exc)
+
+
+app = FastAPI(title="IoT Sensor API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,13 +131,14 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-mqtt_client = mqtt.Client()
+# MQTT Client v2 API 사용
+mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 latest_sensor_data: dict = {}
 event_loop: asyncio.AbstractEventLoop | None = None
 
 
-def on_connect(client, userdata, flags, rc):  # pylint: disable=unused-argument
-    logging.info("MQTT Connected with result code %s", rc)
+def on_connect(client, userdata, connect_flags, reason_code, properties):  # pylint: disable=unused-argument
+    logging.info("MQTT Connected with reason code %s", reason_code)
     # 실제 센서 토픽 구독
     topics = [
         "factory/sensor/dht11",
@@ -186,13 +239,15 @@ mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
 
-@app.on_event("startup")
-async def startup_event() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI Lifespan event handler for startup and shutdown"""
     global event_loop  # noqa: PLW0603
     global influx_client  # noqa: PLW0603
     global write_api  # noqa: PLW0603
     global alert_engine, llm_client, email_notifier
 
+    # Startup
     try:
         event_loop = asyncio.get_running_loop()
 
@@ -218,6 +273,23 @@ async def startup_event() -> None:
         logging.info(f"MQTT client started (broker: {MQTT_BROKER}:{MQTT_PORT})")
     except Exception as exc:  # pylint: disable=broad-except
         logging.error("Failed to connect to MQTT broker: %s", exc)
+
+    yield
+
+    # Shutdown
+    try:
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
+        logging.info("MQTT client stopped")
+        
+        if influx_client:
+            influx_client.close()
+            logging.info("InfluxDB client closed")
+    except Exception as exc:  # pylint: disable=broad-except
+        logging.error("Error during shutdown: %s", exc)
+
+
+app = FastAPI(title="IoT Sensor API", lifespan=lifespan)
 
 
 # ==================== 알람 시스템 ====================
