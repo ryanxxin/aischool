@@ -17,7 +17,7 @@ from grafana_proxy import router as grafana_router
 # 알람 시스템 import
 from alert_engine import AlertEngine
 from llm_client import LLMClient
-from notifier import SlackNotifier, EmailNotifier
+from notifier import EmailNotifier
 
 load_dotenv()
 
@@ -32,7 +32,6 @@ write_api = None
 # 알람 시스템 전역 변수
 alert_engine: AlertEngine | None = None
 llm_client: LLMClient | None = None
-slack_notifier: SlackNotifier | None = None
 email_notifier: EmailNotifier | None = None
 
 logging.basicConfig(level=logging.INFO)
@@ -146,7 +145,6 @@ async def startup_event() -> None:
             logging.info("🚀 Starting MOBY Alert System...")
             alert_engine = AlertEngine(influx_client, INFLUX_BUCKET)
             llm_client = LLMClient()
-            slack_notifier = SlackNotifier()
             email_notifier = EmailNotifier()
             
             # 알람 워커 시작
@@ -203,10 +201,6 @@ async def handle_alert(alert: dict):
             llm_summary = await llm_client.generate_alert_summary(alert)
             if llm_summary:
                 alert["llm_summary"] = llm_summary
-        
-        # Slack 전송
-        if slack_notifier:
-            await slack_notifier.send(alert)
         
         # Email 전송 (Critical만)
         if email_notifier:
