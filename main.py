@@ -12,6 +12,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
+from grafana_proxy import router as grafana_router
 
 # 알람 시스템 import
 from alert_engine import AlertEngine
@@ -75,6 +76,9 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+# Grafana proxy router (exposes /grafana/* -> proxied to configured Grafana)
+app.include_router(grafana_router)
 
 mqtt_client = mqtt.Client()
 latest_sensor_data: dict = {}
