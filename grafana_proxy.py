@@ -4,9 +4,6 @@ import httpx
 
 router = APIRouter(prefix="/grafana")
 
-GRAFANA_URL = os.getenv("GRAFANA_URL")
-GRAFANA_API_KEY = os.getenv("GRAFANA_API_KEY")
-
 
 async def require_auth(request: Request):
     # TODO: 프로젝트 인증 방식에 맞게 구현하세요.
@@ -16,14 +13,17 @@ async def require_auth(request: Request):
 
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 async def proxy(path: str, request: Request, authorized=Depends(require_auth)):
-    if not GRAFANA_URL or not GRAFANA_API_KEY:
+    # read env at request time (load_dotenv in main.py runs after module import)
+    grafana_url = os.getenv("GRAFANA_URL")
+    grafana_api_key = os.getenv("GRAFANA_API_KEY")
+    if not grafana_url or not grafana_api_key:
         raise HTTPException(status_code=500, detail="Grafana not configured")
 
-    url = f"{GRAFANA_URL.rstrip('/')}/{path}"
+    url = f"{grafana_url.rstrip('/')}/{path}"
 
     # 전달할 헤더 구성 (Host 등은 제거)
     client_headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "x-forwarded-for", "content-length")}
-    client_headers["Authorization"] = f"Bearer {GRAFANA_API_KEY}"
+    client_headers["Authorization"] = f"Bearer {grafana_api_key}"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
