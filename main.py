@@ -86,7 +86,8 @@ event_loop: asyncio.AbstractEventLoop | None = None
 
 def on_connect(client, userdata, flags, rc):  # pylint: disable=unused-argument
     logging.info("MQTT Connected with result code %s", rc)
-    client.subscribe("sensors/vibration")
+    # subscribe to all sensor topics published by edge nodes
+    client.subscribe("factory/sensor/#")
 
 
 def on_message(client, userdata, msg):  # pylint: disable=unused-argument
@@ -96,26 +97,58 @@ def on_message(client, userdata, msg):  # pylint: disable=unused-argument
     try:
         payload = json.loads(msg.payload.decode())
         latest_sensor_data = payload
-        logging.info("Received sensor data: %s", payload)
+        logging.info("Received sensor data on %s: %s", msg.topic, payload)
 
-        if write_api:
-            vibration = payload.get("vibration", {})
-            point = (
-                Point("sensor_reading")
-                .tag("device_id", payload.get("device_id", "unknown"))
-                .tag("sensor_type", payload.get("sensor_type", "unknown"))
-                .field("vibration_x", float(vibration.get("x", 0.0)))
-                .field("vibration_y", float(vibration.get("y", 0.0)))
-                .field("vibration_z", float(vibration.get("z", 0.0)))
-                .field("vibration_magnitude", float(vibration.get("magnitude", 0.0)))
-                .field("temperature", float(payload.get("temperature", 0.0)))
-                .field("rpm", float(payload.get("rpm", 0.0)))
-                .time(payload.get("timestamp"), WritePrecision.NS)
-            )
-            write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
+        # Write to InfluxDB if configured
+        if write_api and payload:
+            # payload from sensor_final.py uses 'sensor_type', 'sensor_model', 'fields', 'timestamp_ns'
+            sensor_type = payload.get("sensor_type") or payload.get("type") or "unknown"
+            device_id = payload.get("device_id") or payload.get("device_id", "edge")
+            fields = payload.get("fields") or {}
+
+            p = Point("sensor_reading").tag("sensor_type", sensor_type)
+            if device_id:
+                p = p.tag("device_id", device_id)
+            # add all fields dynamically
+            for k, v in fields.items():
+                # try to convert numeric types where possible
+                try:
+                    if v is None:
+                        continue
+                    if isinstance(v, bool):
+                        p = p.field(k, bool(v))
+                    else:
+                        # try numeric cast
+                        try:
+                            num = float(v)
+                            # if integer-like, write as int
+                            if num.is_integer():
+                                p = p.field(k, int(num))
+                            else:
+                                p = p.field(k, num)
+                        except Exception:
+                            p = p.field(k, str(v))
+                except Exception:
+                    # fallback: store as string
+                    p = p.field(k, str(v))
+
+            # timestamp: expect 'timestamp_ns' (int nanoseconds)
+            ts_ns = payload.get("timestamp_ns") or payload.get("timestamp")
+            try:
+                if ts_ns is not None:
+                    # ensure integer
+                    ts_int = int(ts_ns)
+                    p = p.time(ts_int, WritePrecision.NS)
+            except Exception:
+                pass
+
+            try:
+                write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=p)
+            except Exception as exc:
+                logging.error("Failed to write to InfluxDB: %s", exc)
 
         if event_loop and not event_loop.is_closed():
-            asyncio.run_coroutine_threadsafe(manager.broadcast(payload), event_loop)
+            asyncio.run_coroutine_threadsafe(manager.broadcast({"type": "sensor", "payload": payload}), event_loop)
         else:
             logging.warning("Event loop not ready. Skipping broadcast.")
     except Exception as exc:  # pylint: disable=broad-except
@@ -153,7 +186,14 @@ async def startup_event() -> None:
         else:
             logging.warning("InfluxDB environment variables missing. Skipping InfluxDB init.")
 
-        mqtt_client.connect("localhost", 1883, 60)
+        # MQTT broker connection (use env overrides if provided)
+        broker_host = os.getenv("BROKER_HOST", "localhost")
+        try:
+            broker_port = int(os.getenv("BROKER_PORT", "1883"))
+        except Exception:
+            broker_port = 1883
+
+        mqtt_client.connect(broker_host, broker_port, 60)
         mqtt_client.loop_start()
         logging.info("MQTT client started")
     except Exception as exc:  # pylint: disable=broad-except
